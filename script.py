@@ -1,6 +1,4 @@
 import time
-from os import getenv
-import json
 from dotenv import load_dotenv
 import os
 import requests
@@ -10,8 +8,6 @@ from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.styles import Alignment
 from datetime import datetime
-
-from scrapingScript import access_token
 
 ACCESS_TOKEN = ""
 COOKIES = ""
@@ -97,7 +93,7 @@ def extract_linkedin_link(data):
 def fetch_member_data(form_data):
     """Fetch member data using the POST API request."""
 
-    print("Fetching Users")
+    print("Fetching Users...")
     url = "https://www.bniconnectglobal.com/web/secure/networkAddConnectionsJson"
     headers = {
         'cookie': COOKIES
@@ -105,7 +101,7 @@ def fetch_member_data(form_data):
 
     response = requests.post(url, headers=headers, data=form_data)
     if response.status_code == 200:
-        print("Users Fetched")
+        print("Users Fetched.")
         return response.json()
     else:
         raise Exception(f"Data fetch failed: {response.status_code} - {response.text}")
@@ -215,8 +211,6 @@ def save_data_to_file(data, base_file_name, export_as_csv=False):
 
     print(f"Data saved successfully to {file_path}")
 
-import requests
-import json
 
 def fetch_redirect_location(user_id):
     """
