@@ -11,32 +11,35 @@ from datetime import datetime
 import pytz
 import sys
 
-
 ACCESS_TOKEN = ""
 COOKIES = ""
 excel_data = []
 
+# Previous mappings remain the same
 country_mapping = {
     '3857': "India",
     '10': "United_States",
-    '8150':"United_Kingdom"
+    '8150': "United_Kingdom"
 }
 
 industry_mapping = {
-    '62':"Computer_Programming"
+    '62': "Computer_Programming"
 }
 
-# Classification mapping
 classification_mapping = {
     '620160': "App_Developer",
     '621120': "Cloud_Services",
-    '620350':"Computer_Retailer",
-    '620355':"Computer_Software",
-    '621806':"Computer_Training",
-    '620400':"Data_Security",
+    '620350': "Computer_Retailer",
+    '620355': "Computer_Software",
+    '621806': "Computer_Training",
+    '620400': "Data_Security",
     '621660': "Programmer",
     '629000': "Other"
 }
+
+def validate_integer(value, name):
+    if not value or not value.isdigit():
+        raise ValueError(f"{name} must be an integer number and is required.")
 
 def load_credentials():
     """Load credentials from the config.env file."""
@@ -56,6 +59,24 @@ def load_credentials():
     if classification not in classification_mapping:
         raise ValueError(f"Invalid classification code: {classification}")
 
+    from_page = os.getenv("FROM_PAGE_NUMBER")
+    validate_integer(from_page, "From page number")
+
+    to_page = os.getenv("T0_PAGE_NUMBER")
+    validate_integer(to_page, "To page number")
+
+    page_size = os.getenv("PAGE_SIZE")
+    validate_integer(page_size, "Page size")
+
+    sleep_sec = os.getenv("SLEEP_IN_SECONDS",1)
+    validate_integer(sleep_sec, "Sleeps seconds")
+
+    if int(from_page) > int(to_page):
+        raise ValueError(f"From page no. can't be greater than To page no.")
+
+    if int(to_page) * int(page_size) > 10000:
+        raise ValueError(f"Please select smaller page no.")
+
     return {
         "username": os.getenv("BNI_USERNAME"),
         "password": os.getenv("BNI_PASSWORD"),
@@ -64,12 +85,68 @@ def load_credentials():
         "city": os.getenv("CITY", ""),
         "industry": industry,
         "classification": classification,
-        "page_no": int(os.getenv("PAGE_NUMBER", 99)) if os.getenv("PAGE_NUMBER", "").isdigit() else 99,
-        "page_size": int(os.getenv("PAGE_SIZE", 100)) if os.getenv("PAGE_SIZE", "").isdigit() else 100,
-        "csv":os.getenv("CSV"),
-        "sleep": int(os.getenv("SLEEP_IN_SECONDS", 0)) if os.getenv("SLEEP_IN_SECONDS", "").isdigit() else 1,
-        "cookie":os.getenv("COOKIE")
+        "from_page": from_page,
+        "to_page": to_page,
+        "page_size": page_size,
+        "csv": os.getenv("CSV"),
+        "sleep": sleep_sec,
+        "cookie": os.getenv("COOKIE")
     }
+
+
+def fetch_all_pages(credentials, access_token):
+    """Fetch data from all pages up to the target page number."""
+    all_parsed_data = []
+    form_data_template = {
+        "searchMembers": "Search Members",
+        "formSubmit": "true",
+        "perPage": credentials["page_size"],
+        "memberKeywords": "",
+        "memberFirstName": "",
+        "memberLastName": "",
+        "memberCompanyName": "",
+        "memberIdCountry": credentials["country"],
+        "memberCity": credentials["city"],
+        "memberState": credentials["state"],
+        "memberPrimaryCategory": credentials["industry"],
+        "memberSecondaryCategory": credentials["classification"]
+    }
+    from_page = credentials["from_page"]
+    to_page = credentials["to_page"]
+    for current_page in range(int(from_page), int(to_page) + 1):
+        print(f"\nFetching page {current_page} of {to_page}")
+
+        # Update the current page in form data
+        form_data = form_data_template.copy()
+        form_data["currentPage"] = current_page
+
+        try:
+            # Fetch data for current page
+            page_data = fetch_member_data(form_data)
+            if page_data:
+                # Parse the page data
+                parsed_page_data = parse_member_data(page_data, credentials['sleep'])
+
+                if len(parsed_page_data) > 0:
+                    all_parsed_data.extend(parsed_page_data)
+                else:
+                    print("Page records not found.")
+                    break
+
+                # Optional: Add a delay between pages to avoid overwhelming the server
+                if current_page < int(to_page):
+                    print(f"Waiting before fetching next page...")
+                    time.sleep(1)  # 1 second delay between pages
+            else:
+                print("Users data not found.")
+                break
+
+
+        except Exception as e:
+            print(f"Error fetching page {current_page}: {e}")
+            continue  # Continue with next page even if current page fails
+
+    return all_parsed_data
 
 def authenticate(credentials):
     """Authenticate with the BNI API and return the access token."""
@@ -122,20 +199,19 @@ def extract_linkedin_link(data):
 
 def fetch_member_data(form_data):
     """Fetch member data using the POST API request."""
-
     print("Fetching Users...")
     url = "https://www.bniconnectglobal.com/web/secure/networkAddConnectionsJson"
     headers = {
         'cookie': COOKIES
     }
-
     response = requests.post(url, headers=headers, data=form_data)
     if not "password" in response.text.lower():
         print("Users Fetched.")
         excel_data.append(response.json())
         return response.json()
     else:
-        raise Exception(f"Data fetch failed: please update cookies")
+        print(f"Data fetch failed: please update cookies")
+        return None
 
 def parse_member_data(data, sleep_sec):
     """Parse HTML content from fetched data to extract required details."""
@@ -165,17 +241,21 @@ def parse_member_data(data, sleep_sec):
                 if "userId=" in href:
                     user_id = href.split("userId=")[-1]
                     uuid_location = fetch_redirect_location(user_id)
-                    uuid = uuid_location.split("=")[1]
-                    user_data = fetch_user_data(uuid)
-                    phone = user_data.get('content', {}).get('phoneNumber', None)
-                    mobile = user_data['content']['mobileNumber']
-                    email = user_data['content']['emailAddress']
-                    category = user_data['content']['primaryCategory']
-                    secondaryCategory = user_data['content']['secondaryCategory']
-                    website = user_data['content']['websiteUrl']
-                    companyName = user_data['content']['companyName']
-                    roleInfo = user_data['content']['roleInfo']
-                    linkedIn = extract_linkedin_link(user_data['content']['networkLinks'])
+                    if uuid_location:
+                        uuid = uuid_location.split("=")[1]
+                        user_data = fetch_user_data(uuid)
+                        phone = user_data.get('content', {}).get('phoneNumber', None)
+                        mobile = user_data['content']['mobileNumber']
+                        email = user_data['content']['emailAddress']
+                        category = user_data['content']['primaryCategory']
+                        secondaryCategory = user_data['content']['secondaryCategory']
+                        website = user_data['content']['websiteUrl']
+                        companyName = user_data['content']['companyName']
+                        roleInfo = user_data['content']['roleInfo']
+                        linkedIn = extract_linkedin_link(user_data['content']['networkLinks'])
+                    else:
+                        print("\nUUID not found.")
+                        break
 
             chapter = row.find_all('td')[2].text if len(row.find_all('td')) > 2 else None
             company = row.find_all('td')[3].text if len(row.find_all('td')) > 3 else None
@@ -206,13 +286,11 @@ def parse_member_data(data, sleep_sec):
             # Show loading progress
             total_rows = len(rows)
             progress = int((idx + 1) / total_rows * 100)  # Calculate percentage progress
-            sys.stdout.write(f"\rProcessing... {progress}% complete")
+            sys.stdout.write(f"\rFetching personal details of all users... {progress}% complete")
             sys.stdout.flush()
-
             time.sleep(int(sleep_sec))
 
-        print("\nProcess Done")
-
+        print("\n")
     return data_array
 
 def save_data_to_file(data, base_file_name, export_as_csv=False):
@@ -299,47 +377,43 @@ def fetch_user_data(uuid):
     except Exception as err:
         return f"An unexpected error occurred: {err}"
 
-
+def get_timeStamp():
+    india_tz = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(india_tz)
+    return now
 
 def main():
     credentials = load_credentials()
     try:
+        # Authentication
+        print(get_timeStamp())
         access_token = authenticate(credentials)
         if access_token:
             print("Authentication successful!")
         global ACCESS_TOKEN
         global COOKIES
-        ACCESS_TOKEN = "Bearer"+" "+access_token
+        ACCESS_TOKEN = "Bearer " + access_token
         COOKIES = credentials["cookie"]
 
-        form_data = {
-            "searchMembers": "Search Members",
-            "formSubmit": "true",
-            "currentPage": credentials["page_no"],
-            "perPage": credentials["page_size"],
-            "memberKeywords": "",
-            "memberFirstName": "",
-            "memberLastName": "",
-            "memberCompanyName": "",
-            "memberIdCountry": credentials["country"],
-            "memberCity": credentials["city"],
-            "memberState": credentials["state"],
-            "memberPrimaryCategory": credentials["industry"],
-            "memberSecondaryCategory": credentials["classification"]
-        }
+        # Fetch data from all pages
+        all_data = fetch_all_pages(credentials, access_token)
 
-        data = fetch_member_data(form_data)
-        if data:
-            parsed_data = parse_member_data(data, credentials['sleep'])
+        if all_data:
+            # Generate timestamp and filename
             india_tz = pytz.timezone("Asia/Kolkata")
             now = datetime.now(india_tz)
             timestamp = now.strftime("%Y_%b_%d_%H%M%S").upper()
             base_file_name = f"{timestamp}_{country_mapping[credentials['country']]}_{classification_mapping[credentials['classification']]}"
+
+            # Save all collected data
             isCSV = True if credentials['csv'] == '1' else False
-            save_data_to_file(parsed_data, base_file_name, export_as_csv=isCSV)
+            save_data_to_file(all_data, base_file_name, export_as_csv=isCSV)
+            print(f"Total records collected: {len(all_data)}")
+            print(get_timeStamp())
 
     except Exception as e:
         print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()
